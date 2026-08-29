@@ -1,0 +1,7 @@
+.env
+.venv/
+vector_db/
+tsne_*.html
+__pycache__/
+*.pyc
+.DS_Store
