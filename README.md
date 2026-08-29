@@ -180,8 +180,32 @@ on `gpt-4.1-mini` and `text-embedding-3-small`.
 | `evaluation/eval_answers.py` | judge model on accuracy, completeness, relevance |
 | `experiment.py` | the 18 configuration sweep |
 | `evaluator.py` | dashboard for both evaluations, with live configuration switching |
+| `tests/` | pytest suite over the metrics, the ceiling and the ground truth. No API calls |
 
 ---
+
+## Tests
+
+The numbers above are only worth as much as the code that produced them, so the
+scoring functions are tested against hand-computed values.
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+27 tests, no API calls, under a second. They cover three things:
+
+- **the metrics** — MRR and nDCG against values worked out by hand, including the
+  cases that quietly go wrong: a keyword appearing twice must score its *first*
+  rank, a hit beyond `k` must not count, and zero relevant chunks must return 0.0
+  rather than dividing by zero.
+- **the ceiling** — 13 keywords at k=8 caps at 8/13, but 3 keywords at k=8 is 100%
+  and not 8/3. Result 2 rests on that `min()`, and one test pins the 90.8% and 100%
+  ceilings quoted above so changing the test set forces the README to be updated.
+- **the ground truth** — every keyword in `tests.jsonl` must actually appear
+  somewhere in `knowledge-base/`. A keyword that appears nowhere is unreachable and
+  would drag coverage down on every run, forever, without ever announcing itself.
 
 ## Limitations
 
