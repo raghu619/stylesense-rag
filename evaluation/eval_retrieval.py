@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from evaluation.test import TestQuestion, load_tests  # noqa: E402
+from evaluation.schema import TestQuestion, load_tests  # noqa: E402
 from rag import DEFAULT_DB, DEFAULT_K, fetch_context  # noqa: E402
 
 

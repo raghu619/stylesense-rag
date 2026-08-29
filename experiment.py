@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from evaluation.eval_retrieval import score  # noqa: E402
-from evaluation.test import load_tests  # noqa: E402
+from evaluation.schema import load_tests  # noqa: E402
 
 STORES = ["vector_db/c500_o100", "vector_db/c1000_o200", "vector_db/c2000_o400"]
 KS = [4, 8, 16]

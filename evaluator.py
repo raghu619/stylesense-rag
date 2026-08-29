@@ -22,7 +22,7 @@ import pandas as pd
 
 from evaluation.eval_answers import judge
 from evaluation.eval_retrieval import score
-from evaluation.test import load_tests
+from evaluation.schema import load_tests
 from rag import DEFAULT_DB, DEFAULT_K, answer_question
 
 TESTS = load_tests()

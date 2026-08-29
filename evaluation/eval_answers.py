@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from evaluation.test import TestQuestion, load_tests  # noqa: E402
+from evaluation.schema import TestQuestion, load_tests  # noqa: E402
 from rag import DEFAULT_DB, DEFAULT_K, answer_question  # noqa: E402
 
 JUDGE_MODEL = "gpt-4.1-mini"
