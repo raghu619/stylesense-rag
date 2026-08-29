@@ -194,7 +194,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-27 tests, no API calls, under a second. They cover three things:
+30 tests, no API calls, under a second. They cover four things:
 
 - **the metrics** — MRR and nDCG against values worked out by hand, including the
   cases that quietly go wrong: a keyword appearing twice must score its *first*
@@ -206,6 +206,10 @@ pytest
 - **the ground truth** — every keyword in `tests.jsonl` must actually appear
   somewhere in `knowledge-base/`. A keyword that appears nowhere is unreachable and
   would drag coverage down on every run, forever, without ever announcing itself.
+- **the lazy client** — importing `rag` must not construct `ChatOpenAI`. The
+  retrieval evaluation imports this module for `fetch_context` and never generates
+  an answer, so the free, deterministic half of the evaluation must not require
+  credentials it never uses.
 
 ## Limitations
 

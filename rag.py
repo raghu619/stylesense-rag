@@ -32,8 +32,23 @@ Context:
 {context}
 """
 
-_llm = ChatOpenAI(model=MODEL, temperature=0)
+_llm: ChatOpenAI | None = None
 _retrievers: dict = {}
+
+
+def get_llm() -> ChatOpenAI:
+    """
+    Built on first use, not at import.
+
+    The retrieval evaluation imports this module for fetch_context and never
+    generates an answer, so importing must not require an API key. Constructing
+    the client at import time made the free, deterministic half of the
+    evaluation depend on credentials it never uses.
+    """
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(model=MODEL, temperature=0)
+    return _llm
 
 
 def get_retriever(db: str = DEFAULT_DB, k: int = DEFAULT_K, search_type: str = "similarity"):
@@ -77,4 +92,4 @@ def answer_question(question: str, history: list[dict] | None = None,
     messages = [SystemMessage(content=SYSTEM_PROMPT.format(context=context))]
     messages.extend(convert_to_messages(history or []))
     messages.append(HumanMessage(content=question))
-    return _llm.invoke(messages).content, docs
+    return get_llm().invoke(messages).content, docs
