@@ -1,7 +1,12 @@
 # StyleSense
 
-A RAG assistant over a fashion catalogue, built to answer one question honestly:
-**how much does each retrieval decision actually buy you?**
+> A RAG assistant over a fashion catalogue, built to answer one question honestly:
+> **how much does each retrieval decision actually buy you?**
+
+![Python](https://img.shields.io/badge/python-3.12-3776AB)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Tests](https://img.shields.io/badge/tests-30%20passing-brightgreen)
+![Retrieval eval](https://img.shields.io/badge/retrieval%20eval-deterministic%2C%20no%20API%20calls-lightgrey)
 
 Most RAG tutorials end when the chatbot replies. This one starts there. Every
 configuration below was measured against the same 16 question test set, and the
@@ -12,6 +17,137 @@ course. Results 1 to 5 are day 1 to day 4 material only: LangChain, Chroma,
 character splitting, similarity search. Results 6 and 7 go past that, to metadata
 filtering, reranking and query rewriting, because Result 5 could not be fixed
 without them. The contribution is the measurement.
+
+---
+
+## At a glance
+
+The system could not answer "show me something under 1500 rupees". Cosine
+similarity has no concept of *less than*, so on price questions the retriever
+scored no better than a blindfolded draw. Moving the price out of the embedding
+and into a metadata filter fixed it:
+
+| | before | after |
+|---|---|---|
+| `constraint` coverage | 58.0% | **90.4%** |
+| results breaking the stated budget | 14 | **0** |
+| added latency per question | 0 | **0** |
+| added tokens per question | 0 | **0** |
+
+The three techniques usually reached for first were measured against that same
+58.0% baseline. Query rewriting moved it 0.0 points on two prompts, dual
+retrieval made it worse, and an LLM reranker reached 82.0% while charging 5,354
+tokens and 2.08s per question.
+
+[Result 6](#result-6-the-numeric-constraint-solved) is the fix.
+[Result 7](#result-7-three-popular-fixes-measured) is what the alternatives scored.
+
+---
+
+## Contents
+
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [The finding](#the-finding), where chunk size beat every query-time knob
+- [Two evaluations](#two-evaluations-because-they-answer-different-questions), and why there are two
+
+**The seven results**
+
+| | finding | headline number |
+|---|---|---|
+| 1 | [retrieval coverage predicts answer completeness](#result-1-retrieval-coverage-predicts-answer-completeness) | coverage moves, completeness moves |
+| 2 | [raising k is mostly a mirage](#result-2-raising-k-is-mostly-a-mirage-and-the-exception-is-a-filter) | +5.3 points of coverage, a regression in share of achievable |
+| 3 | [MMR does what it says, and it is not free](#result-3-mmr-does-exactly-what-it-says-and-it-is-not-free) | `occasion` 54% to 59%, `direct_fact` 100% to 90% |
+| 4 | [the biggest accuracy failure was a data problem](#result-4-the-biggest-accuracy-failure-was-a-data-problem) | accuracy 3.60 to 4.80, by fixing the corpus |
+| 5 | [numeric constraints never improved](#result-5-numeric-constraints-never-improved-under-any-configuration) | 58% across all 18 configurations |
+| 6 | [the numeric constraint, solved](#result-6-the-numeric-constraint-solved) | **58.0% to 90.4%**, 14 violations to 0 |
+| 7 | [three popular fixes, measured](#result-7-three-popular-fixes-measured) | rewriting 0.0, dual worse, reranker 82.0% |
+
+- [Files](#files)
+- [Tests](#tests)
+- [Limitations](#limitations)
+- [What comes next](#what-comes-next)
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph Ingest
+        A["61 markdown docs<br/>products, guides, policies"] --> B["RecursiveCharacterTextSplitter"]
+        B --> P["catalogue.py<br/>reads each price"]
+        P --> C["OpenAI embeddings<br/>text-embedding-3-small"]
+    end
+
+    C --> D[("Chroma<br/>vectors + price metadata")]
+
+    subgraph Retrieval
+        E["question"] --> W["rewrite.py<br/>off by default"]
+        W --> S["similarity search<br/>the price filter adds<br/>a where clause here"]
+        S --> N["candidates"]
+        N --> R["rerank.py cross-encoder<br/>off by default"]
+        R --> K["top k chunks"]
+    end
+
+    D --> S
+
+    K --> G["system prompt + context"]
+    G --> H["gpt-4.1-mini"]
+    K --> I["retrieval eval<br/>coverage, precision,<br/>recall ceiling"]
+    H --> J["answer eval<br/>judge model"]
+```
+
+The rewriter, the reranker and the price filter are all off by default, so the
+solid path through the middle is what ships and what produced the baseline
+numbers. The price filter is a pre-filter: it restricts the candidate set before
+the nearest neighbour search rather than deleting violators afterwards, which is
+why it is drawn on the search itself.
+
+`app.py` and both evaluations import from `rag.py`. That is deliberate: if the
+evaluation builds its own retriever, you are measuring a system you do not ship.
+
+---
+
+## Quick start
+
+```bash
+cp .env.example .env          # add your OpenAI key
+pip install -r requirements.txt
+
+python build_knowledge_base.py   # generates the 61 document corpus
+python ingest.py 2000 400        # chunk, embed, store
+python build_tests.py            # test set, ground truth parsed from the corpus
+python app.py                    # the assistant
+python evaluator.py              # the evaluation dashboard
+```
+
+To reproduce the sweep:
+
+```bash
+python ingest.py 500 100
+python ingest.py 1000 200
+python ingest.py 2000 400
+python experiment.py             # 18 configurations, writes eval_results.md
+```
+
+To reproduce Results 6 and 7. The price filter needs an index carrying price
+metadata, so rebuild with the current `ingest.py` first:
+
+```bash
+python ingest.py 2000 400            # rebuild, now storing price as an int
+
+python evaluation/eval_recall.py     # ranked low, or never returned at all
+python evaluation/eval_precision.py  # precision, random baseline, budget violations
+python evaluation/eval_precision.py vector_db/c2000_o400 8 constraint --filter
+python evaluation/eval_precision.py vector_db/c2000_o400 8 constraint --rerank 32
+python evaluation/eval_precision.py vector_db/c2000_o400 8 constraint --dual --rerank 32
+python check_ties.py                 # near ties that reshuffle on the next rebuild
+python compare.py                    # dashboard over every configuration
+```
+
+Total API cost for a full rebuild plus the sweep plus one judged run is a few cents
+on `gpt-4.1-mini` and `text-embedding-3-small`.
 
 ---
 
@@ -228,68 +364,6 @@ being measured here is which failure mode you have, not which technique is bette
 
 Full sweep of the 18 chunking and retrieval configurations:
 [`eval_results.md`](eval_results.md)
-
----
-
-## How it works
-
-```mermaid
-flowchart LR
-    A[61 markdown docs<br/>products, guides, policies] --> B[RecursiveCharacterTextSplitter]
-    B --> C[OpenAI embeddings<br/>text-embedding-3-small]
-    C --> D[(Chroma)]
-    E[question] --> D
-    D --> F[top k chunks]
-    F --> G[system prompt + context]
-    G --> H[gpt-4.1-mini]
-    F --> I[retrieval eval<br/>MRR, nDCG, coverage]
-    H --> J[answer eval<br/>judge model]
-```
-
-`app.py` and both evaluations import from `rag.py`. That is deliberate: if the
-evaluation builds its own retriever, you are measuring a system you do not ship.
-
----
-
-## Run it
-
-```bash
-cp .env.example .env          # add your OpenAI key
-pip install -r requirements.txt
-
-python build_knowledge_base.py   # generates the 61 document corpus
-python ingest.py 2000 400        # chunk, embed, store
-python build_tests.py            # test set, ground truth parsed from the corpus
-python app.py                    # the assistant
-python evaluator.py              # the evaluation dashboard
-```
-
-To reproduce the sweep:
-
-```bash
-python ingest.py 500 100
-python ingest.py 1000 200
-python ingest.py 2000 400
-python experiment.py             # 18 configurations, writes eval_results.md
-```
-
-To reproduce Results 6 and 7. The price filter needs an index carrying price
-metadata, so rebuild with the current `ingest.py` first:
-
-```bash
-python ingest.py 2000 400            # rebuild, now storing price as an int
-
-python evaluation/eval_recall.py     # ranked low, or never returned at all
-python evaluation/eval_precision.py  # precision, random baseline, budget violations
-python evaluation/eval_precision.py vector_db/c2000_o400 8 constraint --filter
-python evaluation/eval_precision.py vector_db/c2000_o400 8 constraint --rerank 32
-python evaluation/eval_precision.py vector_db/c2000_o400 8 constraint --dual --rerank 32
-python check_ties.py                 # near ties that reshuffle on the next rebuild
-python compare.py                    # dashboard over every configuration
-```
-
-Total API cost for a full rebuild plus the sweep plus one judged run is a few cents
-on `gpt-4.1-mini` and `text-embedding-3-small`.
 
 ---
 
