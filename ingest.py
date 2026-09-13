@@ -17,6 +17,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 
+from catalogue import parse_price
+
 load_dotenv(override=True)
 
 EMBEDDING_MODEL = "text-embedding-3-small"
@@ -27,7 +29,21 @@ DB_NAME = f"vector_db/c{CHUNK_SIZE}_o{CHUNK_OVERLAP}"
 
 
 def load_documents():
-    """Each folder name becomes doc_type metadata, exactly like Insurellm."""
+    """
+    Each folder name becomes doc_type metadata, exactly like Insurellm.
+
+    Products additionally carry their price as an int, which is what makes a
+    Chroma where clause possible. Set BEFORE splitting so every chunk of a
+    product inherits it, including chunks whose text does not contain the
+    Price line at all.
+
+    int, not str: Chroma's $lte on strings compares lexicographically, where
+    "800" sorts above "1500". Silent, plausible and wrong.
+
+    Guides and policies get no price key. Chroma metadata cannot hold None, and
+    an absent key is excluded by any price filter, which is the behaviour we
+    want for a question asking about a budget.
+    """
     documents = []
     for folder in glob.glob("knowledge-base/*"):
         doc_type = os.path.basename(folder)
@@ -37,6 +53,9 @@ def load_documents():
         )
         for doc in loader.load():
             doc.metadata["doc_type"] = doc_type
+            price = parse_price(doc.page_content)
+            if price is not None:
+                doc.metadata["price"] = price
             documents.append(doc)
     return documents
 
@@ -61,6 +80,12 @@ for doc_type in sorted(by_type):
 
 sizes = [len(c.page_content) for c in chunks]
 print(f"\nChunk length   avg {sum(sizes)//len(sizes)}, min {min(sizes)}, max {max(sizes)}")
+
+priced = [c for c in chunks if "price" in c.metadata]
+product_chunks = [c for c in chunks if c.metadata["doc_type"] == "products"]
+print(f"Priced chunks  {len(priced)} of {len(product_chunks)} product chunks")
+if len(priced) != len(product_chunks):
+    print("  WARNING: a product chunk is missing its price. The filter will silently skip it.")
 
 embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
 if os.path.exists(DB_NAME):
