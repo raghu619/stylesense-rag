@@ -331,17 +331,17 @@ pytest
 
 30 tests, no API calls, under a second. They cover four things:
 
-- **the metrics** — MRR and nDCG against values worked out by hand, including the
+- **the metrics** - MRR and nDCG against values worked out by hand, including the
   cases that quietly go wrong: a keyword appearing twice must score its *first*
   rank, a hit beyond `k` must not count, and zero relevant chunks must return 0.0
   rather than dividing by zero.
-- **the ceiling** — 13 keywords at k=8 caps at 8/13, but 3 keywords at k=8 is 100%
+- **the ceiling** - 13 keywords at k=8 caps at 8/13, but 3 keywords at k=8 is 100%
   and not 8/3. Result 2 rests on that `min()`, and one test pins the 90.8% and 100%
   ceilings quoted above so changing the test set forces the README to be updated.
-- **the ground truth** — every keyword in `tests.jsonl` must actually appear
+- **the ground truth** - every keyword in `tests.jsonl` must actually appear
   somewhere in `knowledge-base/`. A keyword that appears nowhere is unreachable and
   would drag coverage down on every run, forever, without ever announcing itself.
-- **the lazy client** — importing `rag` must not construct `ChatOpenAI`. The
+- **the lazy client** - importing `rag` must not construct `ChatOpenAI`. The
   retrieval evaluation imports this module for `fetch_context` and never generates
   an answer, so the free, deterministic half of the evaluation must not require
   credentials it never uses.
