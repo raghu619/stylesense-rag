@@ -8,9 +8,10 @@ configuration below was measured against the same 16 question test set, and the
 numbers decided what shipped.
 
 Built while working through the retrieval week of Ed Donner's LLM engineering
-course. The pipeline is deliberately day 1 to day 4 material only: LangChain,
-Chroma, character splitting, similarity search. No reranking, no query rewriting.
-The contribution is the measurement.
+course. Results 1 to 5 are day 1 to day 4 material only: LangChain, Chroma,
+character splitting, similarity search. Results 6 and 7 go past that, to metadata
+filtering, reranking and query rewriting, because Result 5 could not be fixed
+without them. The contribution is the measurement.
 
 ---
 
@@ -69,7 +70,7 @@ Where coverage moved, completeness moved. Where coverage did not move, completen
 did not move, to two decimal places on `constraint`. So the free deterministic metric
 can be used to iterate, and the expensive judge only to confirm the winner.
 
-## Result 2: raising k is mostly a mirage
+## Result 2: raising k is mostly a mirage, and the exception is a filter
 
 Coverage rises with k for a trivial reason: a question expecting 13 keywords cannot
 score above 8/13 when k is 8. So the eval reports the arithmetic ceiling next to
@@ -85,6 +86,15 @@ every score.
 Doubling k doubled the context sent to the model, showed +5.3 points of raw
 coverage, and was a small regression in share of achievable. A coverage number
 without its ceiling is not a measurement.
+
+That holds while retrieval is unconstrained, and it stops holding once a filter
+fully determines the answer set. Similarity search always fills all k slots,
+however poor the last ones are, so every extra slot is paid for and most of them
+are noise. A filtered search returns only products that qualify, so the result set
+self-limits: the extra slots hold either a real answer or nothing. With the price
+filter of Result 6, k=16 takes all four constraint questions to 100% coverage and
+costs nothing it does not use. Raising k is a mirage when the retriever is
+guessing, and free once it is not.
 
 ## Result 3: MMR does exactly what it says, and it is not free
 
@@ -113,9 +123,111 @@ rupees", the system retrieved 2, and that did not change across all 18
 configurations. `constraint` coverage was 58% before and 58% after.
 
 Cosine similarity has no concept of *less than*. Nothing in days 1 to 4 can fix
-this, which is the honest ending of this project and the start of the next one.
+this, so the next two results are what happened when the project went past day 4.
+Result 6 is the fix. Result 7 is what the popular alternatives scored against it.
 
-Full sweep: [`eval_results.md`](eval_results.md)
+## Result 6: the numeric constraint, solved
+
+`constraint` coverage went from **58.0% to 90.4%**, and results that broke the
+stated budget went from **14 to 0**. It added no latency and no tokens.
+
+The fix is not a better retriever, it is not retrieval at all. `ingest.py` reads
+the price out of each product document and writes it into chunk metadata as an int,
+`catalogue.py` parses the ceiling out of the question, and Chroma gets a `$lte`
+where clause. The nearest neighbour search then runs over qualifying products only.
+
+**Why the embedding could never do this.** An embedding places `1500` somewhere in
+the space, and the things nearest to it are `1499` and `1299`. That is what
+proximity means. But "under 1500" is not a point, it is a half-line: everything
+from 0 to 1500 belongs and everything above it does not, and Rs 799 is a perfect
+answer while sitting a long way from the number in the question. A single distance
+cannot represent a threshold, so the query matched products that *talk about* a
+price rather than products that *cost* less than one.
+
+Four measurements, all saying that:
+
+- precision@8 on "under 1500 rupees" was **25.0%**. The random base rate, drawing 8
+  products blindly from a catalogue where 13 of 52 qualify, is also **25.0%**, and
+  the normalised score is therefore **0.00**. The retriever contributed nothing over
+  a blindfolded draw.
+- correlation between price and rank across the 13 qualifying products: **-0.545**.
+  The ordering was not weakly related to price, it was pointed the wrong way.
+- mean price of the top 8 for "under Rs 1,500": **Rs 4,412**, against a catalogue
+  mean of **Rs 3,516**. Asked for cheap, it returned dearer than average.
+- best cosine similarity was **0.351** on the price questions and **0.610** on the
+  meaning questions, and the two result sets do not overlap at all. The retriever
+  was not slightly wrong on price questions, it was answering a different question.
+
+Per question, baseline to price filter:
+
+| question | precision | recall | normalised | over budget |
+|---|---|---|---|---|
+| under Rs 1,500 | 25.0% to 100% | 15.4% to 61.5% | 0.00 to 1.00 | 6 to 0 |
+| under Rs 1,000 | 12.5% to 100% | 16.7% to 100% | 0.02 to 1.00 | 5 to 0 |
+
+Recall on "under Rs 1,500" stops at 61.5% for the reason Result 2 gives: 13
+qualifying products cannot fit into 8 slots, and 8/13 is 61.5%. The filter reaches
+the arithmetic ceiling exactly. The other three constraint questions hit 100% at
+k=8, which is where the 90.4% mean comes from, and at k=16 all four reach **100%**.
+
+The filter can also return nothing. Similarity search cannot, it always hands back
+its k nearest however bad they are. Being able to say no such product exists is
+part of the fix rather than a side effect of it.
+
+## Result 7: three popular fixes, measured
+
+Query rewriting, dual retrieval and LLM reranking are the standard next moves, and
+all three are taught in the course. Measured on the same four constraint questions
+at k=8, against the same published 58.0%:
+
+| configuration | coverage | over budget | wait/question | tokens/question |
+|---|---|---|---|---|
+| dual retrieval, no reranker | 53.9% | 15 | 0.79s | 109 |
+| baseline (published) | 58.0% | 14 | 0 | 0 |
+| query rewrite, "expand" prompt | 58.0% | 12 | 0.96s | 111 |
+| query rewrite, "focus" prompt (the course's) | 58.0% | 14 | 1.01s | 112 |
+| dual + reranker, "expand" | 76.0% | 6 | 2.45s | 5,715 |
+| dual + reranker, "focus" (the course's pipeline) | 77.9% | 5 | 2.58s | 5,501 |
+| reranker alone, 32 to 8 | 82.0% | 4 | 2.08s | 5,354 |
+| **price filter** | **90.4%** | **0** | **0** | **0** |
+| price filter + reranker | 90.4% | 0 | 1.29s | 3,358 |
+
+**Query rewriting produced no change.** 58.0% before, 58.0% after, on two different
+prompts, one of them the course's own. The "expand" prompt cut over-budget results
+from 14 to 12 and left coverage identical. A rewriter changes the words of the
+query and then hands the result to the same nearest neighbour search, so it can fix
+a vocabulary mismatch and cannot fix a threshold. Watch the over-budget column
+rather than the coverage here: cheap products in this catalogue are described in
+different words from expensive ones, so a rewriter can move coverage by riding that
+correlation without representing the budget at all.
+
+**Dual retrieval was worse than doing nothing.** 53.9% against a 58.0% baseline, 15
+over-budget results against 14, and it charges 0.79s and 109 tokens per question to
+get there. Half the slots go to a query that scored no better than the original, so
+the merge spends real budget displacing results that were already in the list.
+
+**The reranker works, and it is not cheap.** 82.0% on its own, pulling 32 candidates
+down to 8, the largest gain from anything that is not the filter. It works for a
+reason the rewriter cannot borrow: a cross-encoder puts the question and the
+document through the model together, so it can compare the token 7999 against the
+token 1500 in one computation, while a bi-encoder embedded that document before the
+question existed. It costs 2.08s and 5,354 tokens per question, and it can only
+reorder what stage one returned, which is why `eval_recall.py` separates "ranked
+low" from "never returned". The second number is the hard cap on every reranking
+row in this table.
+
+**Adding the reranker on top of the filter moved coverage by 0.0 points**, and
+charged 1.29s and 3,358 tokens per question for it. Once the filter has decided the
+answer set, there is nothing left to reorder that changes the score.
+
+None of this is an argument against these techniques. They were designed for prose
+documents, where the failure is that the shopper says "hot day" and the corpus says
+"breathable linen", and they are good at that. This is a product catalogue with a
+number in the question, and a number in a question is a schema predicate. What is
+being measured here is which failure mode you have, not which technique is better.
+
+Full sweep of the 18 chunking and retrieval configurations:
+[`eval_results.md`](eval_results.md)
 
 ---
 
@@ -161,6 +273,21 @@ python ingest.py 2000 400
 python experiment.py             # 18 configurations, writes eval_results.md
 ```
 
+To reproduce Results 6 and 7. The price filter needs an index carrying price
+metadata, so rebuild with the current `ingest.py` first:
+
+```bash
+python ingest.py 2000 400            # rebuild, now storing price as an int
+
+python evaluation/eval_recall.py     # ranked low, or never returned at all
+python evaluation/eval_precision.py  # precision, random baseline, budget violations
+python evaluation/eval_precision.py vector_db/c2000_o400 8 constraint --filter
+python evaluation/eval_precision.py vector_db/c2000_o400 8 constraint --rerank 32
+python evaluation/eval_precision.py vector_db/c2000_o400 8 constraint --dual --rerank 32
+python check_ties.py                 # near ties that reshuffle on the next rebuild
+python compare.py                    # dashboard over every configuration
+```
+
 Total API cost for a full rebuild plus the sweep plus one judged run is a few cents
 on `gpt-4.1-mini` and `text-embedding-3-small`.
 
@@ -171,15 +298,23 @@ on `gpt-4.1-mini` and `text-embedding-3-small`.
 | file | what it does |
 |---|---|
 | `build_knowledge_base.py` | generates the corpus: 52 products, 5 guides, 4 policies |
-| `ingest.py` | loads, chunks, embeds, stores. Chunk size and overlap are arguments |
-| `rag.py` | retrieval and generation. The only copy, shared by the app and the evals |
+| `ingest.py` | loads, chunks, embeds, stores. Chunk size and overlap are arguments. Writes each product's price into chunk metadata as an int |
+| `catalogue.py` | shared price parsing. Reads a price out of a product doc, and a price ceiling out of a question. Used by ingest, the evals and the filter |
+| `rag.py` | retrieval and generation. The only copy, shared by the app and the evals. Carries `price_filter`, `rerank_from`, `rewrite`, `dual` and `rewrite_style` |
 | `app.py` | Gradio assistant |
 | `visualize.py` | t-SNE of the vector store, coloured by document type |
 | `build_tests.py` | writes the test set, with every keyword verified against the corpus |
 | `evaluation/eval_retrieval.py` | MRR, nDCG, coverage, with the ceiling |
 | `evaluation/eval_answers.py` | judge model on accuracy, completeness, relevance |
+| `evaluation/eval_recall.py` | coverage swept across retrieval depth. Separates "ranked low" from "never returned", which caps every reranking config |
+| `evaluation/eval_precision.py` | precision, a random baseline, a normalised score, and a count of results that break the stated budget |
+| `check_ties.py` | distance gaps between consecutive ranks, to find near-ties that reshuffle on index rebuild |
+| `rerank.py` | LLM cross-encoder reranker, listwise, with validation and repair of the returned ordering |
+| `rewrite.py` | query rewriting with two selectable prompts, plus the dual-retrieval merge |
+| `pricemap.py` | the price-axis figure: what qualifies vs what was returned, on one axis |
 | `experiment.py` | the 18 configuration sweep |
 | `evaluator.py` | dashboard for both evaluations, with live configuration switching |
+| `compare.py` | Gradio dashboard comparing every configuration |
 | `tests/` | pytest suite over the metrics, the ceiling and the ground truth. No API calls |
 
 ---
@@ -223,9 +358,32 @@ pytest
 - The evaluation calls `answer_question` without conversation history, while the app
   passes history. The harness measures a slightly different system from the demo.
 - The corpus is LLM generated, so its language is cleaner than real product copy.
+- All four constraint questions are expressible as schema fields: price, gender,
+  category. The test set therefore contains no question that only a language model
+  could answer. That structurally favours the filter, and the reranker's real
+  advantage, a request no `where` clause can express, is untested here.
+- Rebuilding the index reshuffled results whose distances differed by 0.3% of the
+  spread. Set-based metrics like precision and recall survived that. Rank-based ones
+  like MRR carry that noise, which is what `check_ties.py` exists to print: a gain
+  smaller than those gaps is a coin flip reported as an improvement.
+- The reranker returned a malformed ordering, an id out of range, a duplicate, or a
+  missing one, on roughly every other call across four runs. `rerank.py` validates
+  and repairs the ordering. An unvalidated implementation indexes straight into the
+  candidate list and silently drops documents, and the run still finishes with
+  plausible looking numbers.
+- Two runs of the same reranker configuration produced identical metrics and
+  latency from 1.17s to 2.08s. Two runs is not a variance measurement, so read the
+  latency column in Result 7 as an order of magnitude, not a value.
 
 ## What comes next
 
-Metadata filtering, so a budget becomes a database `where` clause instead of a vector,
-measured against this same test set. `constraint` coverage sat at 58% through all 18
-configurations, so there is a clear number to beat.
+Gender and category promoted to metadata as well, so "kurtas for men" becomes two
+more `where` clauses instead of two more hopeful vectors, measured against this same
+test set.
+
+That opens the question this project has been walking towards. If every attribute
+becomes a filter, what is left for the embedding to do. The answer is the part no
+schema holds: "something breathable for a beach wedding" is not a price, a gender or
+a category, and it is the only kind of question where a vector search is doing work
+a database cannot. The test set has none of those yet, so that is the next thing to
+build, before any more retrieval is tuned.
